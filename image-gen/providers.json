@@ -1,0 +1,10 @@
+{
+  "providers": {
+    "dashscope-qwen": {
+      "api_url": "https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "models_used": ["qwen-image-2.0-pro-2026-04-22"],
+      "notes": "XHS infographic sets: 2048*2048 square, Workshop palette (#FFF9EE/#26221B/#FFD84D/#C43E27) baked into prompt text, prompt_extend true for CJK text rendering"
+    }
+  }
+}
