@@ -7,7 +7,21 @@ API URL, using an API key from an environment variable. Handles:
   - image edit (one input image + text instruction)
   - multi-image combine (multiple input images + text instruction)
 Local image paths in the spec are base64-encoded into data URIs before sending.
-The resulting image(s) are downloaded to the requested output path(s).
+
+Delivery mode is set by "mode" in the spec, chosen by the skill flow after
+asking Gregg (see SKILL.md step 8):
+  "mode": "download"  Downloads the generated image(s) to "output_paths" and
+                       reports only those local paths. Requires "output_paths".
+  "mode": "link"       Writes the provider's raw signed image URL(s) to
+                       "url_files" (never to stdout) and reports only those
+                       file paths. Requires "url_files".
+
+Neither mode ever prints the raw signed image URL to stdout as a bare string.
+Some agent runtimes (e.g. OpenClaw, see openclaw/openclaw#112839) hard-truncate
+long tool-output strings at a fixed character count, which cuts signed OSS
+URLs mid-query-string (right through OSSAccessKeyId/Signature) and produces an
+unusable, un-recoverable link. Writing the URL to a file and reporting only
+the file path sidesteps this regardless of which mode Gregg picked.
 
 Usage:
   python3 call_provider.py <spec.json>
@@ -24,7 +38,9 @@ spec.json shape:
   "watermark": false,
   "size": "2048*2048",
   "n": 1,
-  "output_paths": ["/abs/path/to/save1.png"]
+  "mode": "download",
+  "output_paths": ["/abs/path/to/save1.png"],
+  "url_files": ["/abs/path/to/save1.url.txt"]
 }
 """
 import base64
@@ -120,19 +136,32 @@ def main():
         print("ERROR: no image URLs in response:", json.dumps(result), file=sys.stderr)
         sys.exit(5)
 
-    output_paths = spec.get("output_paths", [])
-    saved = []
-    for i, url in enumerate(image_urls):
-        out_path = output_paths[i] if i < len(output_paths) else f"./generated_{i}.png"
-        out_path = os.path.expanduser(out_path)
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        with urllib.request.urlopen(url, timeout=120) as img_resp:
-            data = img_resp.read()
-        with open(out_path, "wb") as f:
-            f.write(data)
-        saved.append(out_path)
+    mode = spec.get("mode", "download")
 
-    print(json.dumps({"saved": saved, "request_id": result.get("request_id", "")}))
+    if mode == "download":
+        output_paths = spec.get("output_paths", [])
+        saved = []
+        for i, url in enumerate(image_urls):
+            out_path = output_paths[i] if i < len(output_paths) else f"./generated_{i}.png"
+            out_path = os.path.expanduser(out_path)
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with urllib.request.urlopen(url, timeout=120) as img_resp:
+                data = img_resp.read()
+            with open(out_path, "wb") as f:
+                f.write(data)
+            saved.append(out_path)
+        print(json.dumps({"mode": "download", "saved": saved, "request_id": result.get("request_id", "")}))
+    else:
+        url_files = spec.get("url_files", [])
+        written = []
+        for i, url in enumerate(image_urls):
+            url_file = url_files[i] if i < len(url_files) else f"./generated_{i}.url.txt"
+            url_file = os.path.expanduser(url_file)
+            os.makedirs(os.path.dirname(url_file) or ".", exist_ok=True)
+            with open(url_file, "w") as f:
+                f.write(url)
+            written.append(url_file)
+        print(json.dumps({"mode": "link", "url_files": written, "request_id": result.get("request_id", "")}))
 
 
 if __name__ == "__main__":

@@ -89,11 +89,11 @@ Write a vivid, specific prompt in the style/language appropriate to the mode and
 Show the prompt before calling only if Gregg asked to review it first.
 
 ### 8. Output destination
-Ask Gregg for a local output path (folder or filename) to save the video to — default to a sensible scratch/output location if he doesn't care. **Always download locally, on every platform, no exceptions.**
+Ask Gregg (AskUserQuestion) which he wants:
+- **Local file** — downloads the video and saves it locally. Ask for an output path (folder or filename); default to a sensible scratch/output location if he doesn't care.
+- **Hosted link** — keeps the provider's signed URL instead of downloading. **Always show this warning when offering the link option, regardless of platform**: *"Heads up — some agent runtimes (confirmed on OpenClaw, see openclaw/openclaw#112839) truncate long URLs in tool output, which can break a signed link like this one when copy-pasted. Local file is the safer default if you're not sure this will render fully."* Then respect whichever he picks.
 
-This isn't optional per-platform behavior anymore: never surface the raw signed `video_url` as a bare string in chat/tool-output. Several agent runtimes — confirmed on OpenClaw (see openclaw/openclaw#112839) — hard-truncate long tool-output strings at a fixed character count, which cuts the URL's query string mid-`Signature`/`OSSAccessKeyId` and leaves an unusable, unrecoverable link with no way to reconstruct the missing characters. Downloading locally and reporting only the short local path sidesteps this entirely, on every platform (Claude Code, Hermes, OpenClaw, anywhere else this skill runs).
-
-If Gregg explicitly wants a shareable hosted link (e.g. to forward via a messaging channel) rather than a local file, write the full `video_url` to a small scratch file and report the file path — never paste the raw URL directly into the chat/tool-output stream.
+Either way, **never print the raw signed `video_url` directly into chat/tool-output as a bare string.** The truncation bug above cuts the URL's query string mid-`Signature`/`OSSAccessKeyId`, leaving an unusable link with no way to reconstruct the missing characters — this risk exists independent of which mode Gregg picks, since the string itself is what gets truncated. If he chooses the link option, the skill still writes the full URL to a small scratch file and reports the file path, never pasting the raw URL into the response.
 
 ### 9. Build the request spec and submit
 Write a spec JSON to a scratch file:
@@ -122,19 +122,24 @@ This prints `{"task_id": "...", "task_status": "PENDING", "request_id": "..."}` 
 ### 10. Poll until done
 Use **ScheduleWakeup** to poll — do not block synchronously waiting minutes for a video job (matches this skill's actual observed behavior: t2v took ~77s, i2v-with-no-media failed instantly).
 
-Each wakeup:
+Each wakeup, pick the invocation matching Gregg's step 8 choice:
 ```bash
 source ~/.zshrc 2>/dev/null
-python3 /Users/GreggChen/.claude/skills/qwen-video-gen/scripts/check_video.py <task_id> <api_key_env> <api_url_host_root> <output_path>
+# Local file:
+python3 /Users/GreggChen/.claude/skills/qwen-video-gen/scripts/check_video.py <task_id> <api_key_env> <api_url_host_root> --mode=download --output-path=<output_path>
+# Hosted link:
+python3 /Users/GreggChen/.claude/skills/qwen-video-gen/scripts/check_video.py <task_id> <api_key_env> <api_url_host_root> --mode=link --url-file=<scratch_url_file_path>
 ```
-where `<api_url_host_root>` is the provider's `api_url` with the path stripped back to the host (e.g. `https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com`) — task status lives on the **same host** as submission, at `/api/v1/tasks/{task_id}`, confirmed in this session. Do not assume a separate global tasks host. `<output_path>` is the local file path from step 8 — pass it on every poll even though it's only used once the task succeeds.
+where `<api_url_host_root>` is the provider's `api_url` with the path stripped back to the host (e.g. `https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com`) — task status lives on the **same host** as submission, at `/api/v1/tasks/{task_id}`, confirmed in this session. Do not assume a separate global tasks host. Pass the same `--mode` and path flag on every poll even though it's only used once the task succeeds.
 
 - `PENDING` / `RUNNING` → schedule another wakeup (~120–180s is reasonable; first check can be sooner if the job is typically fast).
-- `SUCCEEDED` → the script has already downloaded the video to `<output_path>` and printed `{"task_status": "SUCCEEDED", "local_path": "..."}`. Report the **local path** to Gregg — never the raw `video_url` (see step 8 for why). **Prefix the completion message with 3 emoji** (Gregg's standing preference for video-ready alerts, e.g. 🎬🎥✨) so it's visually distinct in a busy chat.
+- `SUCCEEDED` (download mode) → script already downloaded the video and printed `{"task_status": "SUCCEEDED", "mode": "download", "local_path": "..."}`. Report the **local path** to Gregg.
+- `SUCCEEDED` (link mode) → script wrote the signed URL to `<scratch_url_file_path>` and printed `{"task_status": "SUCCEEDED", "mode": "link", "url_file": "..."}`. Read that file yourself and paste its contents as the link in your response — a freshly-read short-lived value in your own response is fine; what must never happen is the *tool call's stdout* carrying the long URL through a truncation-prone display layer. Repeat the OpenClaw truncation caveat from step 8 alongside the link.
+- Either mode: **prefix the completion message with 3 emoji** (Gregg's standing preference for video-ready alerts, e.g. 🎬🎥✨) so it's visually distinct in a busy chat.
 - `FAILED` → report `code` and `message` verbatim. Common cause: wrong mode chosen for a model that requires `input.media` (i2v family) — don't guess a fix, tell Gregg what's missing and offer the mode menu again.
 
 ### 11. Confirm and remember
-After success: update `providers.json` with any new provider/model entry (including `expires` if Gregg gave one). Tell Gregg the video is saved locally at `local_path` (3-emoji prefix). Do not print the original signed `video_url` — it's already been consumed by the download and has no further use.
+After success: update `providers.json` with any new provider/model entry (including `expires` if Gregg gave one). Tell Gregg where the result is — local path (download mode) or the link plus expiry caveat (link mode).
 
 ## Request shape reference (DashScope Wan2.7, confirmed + documented)
 
@@ -158,7 +163,7 @@ Content-Type: application/json
 GET {same host as submission}/api/v1/tasks/{task_id}
 Authorization: Bearer $DASHSCOPE_API_KEY
 ```
-Response `output.task_status` ∈ `PENDING | RUNNING | SUCCEEDED | FAILED`. On `SUCCEEDED`, `output.video_url` is a signed OSS URL (observed ~24h-scale expiry via the `Expires` query param — treat as time-limited, not permanent). `check_video.py` downloads this immediately and never returns it as a bare string (see "Signed URL truncation" below).
+Response `output.task_status` ∈ `PENDING | RUNNING | SUCCEEDED | FAILED`. On `SUCCEEDED`, `output.video_url` is a signed OSS URL (observed ~24h-scale expiry via the `Expires` query param — treat as time-limited, not permanent). `check_video.py` never returns this as a bare stdout string in either delivery mode (see "Signed URL truncation" below).
 
 ## Security notes
 - Never print, log, or echo API key values, even partially.
@@ -166,4 +171,6 @@ Response `output.task_status` ∈ `PENDING | RUNNING | SUCCEEDED | FAILED`. On `
 - Scratch spec files may contain local file paths but never key material.
 
 ## Signed URL truncation (platform display-layer bug)
-`check_video.py` **always** downloads the video locally on `SUCCEEDED` and only ever prints a local path + short status, never the raw `video_url`. This isn't just tidiness — some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts strings at 160 chars). Signed OSS URLs run 250–400+ chars with the auth signature (`OSSAccessKeyId`, `Signature`) near the end — truncation slices right through it, producing a link that returns `InvalidAccessKeyId` and can't be reconstructed from anything else in the response. Downloading locally sidesteps the bug entirely rather than depending on a per-platform display-limit fix. Applies uniformly across Claude Code, Hermes, OpenClaw, and any future platform this skill runs on — do not special-case "safe" platforms back to link-only.
+Gregg chooses **local file** or **hosted link** per job (step 8) — this is a real tradeoff (disk usage/durability vs. avoiding a local file he doesn't want), not a fake choice. But the raw signed `video_url` must never be printed to stdout as a bare string in *either* mode: some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts strings at 160 chars). Signed OSS URLs run 250–400+ chars with the auth signature (`OSSAccessKeyId`, `Signature`) near the end — truncation slices right through it, producing a link that returns `InvalidAccessKeyId` and can't be reconstructed from anything else in the response.
+
+`check_video.py` handles this by writing the URL to a file (`--url-file`) instead of printing it, regardless of mode. When reporting a link result to Gregg, always repeat the truncation warning from step 8 so he knows to test the link before relying on it if he's on a platform that might mangle it. Do not assume "Claude Code is safe, so skip the warning there" — keep the warning uniform across platforms per Gregg's explicit preference, since the skill can't detect which runtime it's in.

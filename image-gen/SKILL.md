@@ -95,27 +95,30 @@ Write a vivid, specific prompt tailored to the requirement gathered in step 3, i
 Show Gregg the prompt before calling the API only if he asked to review it first; otherwise proceed (he can always ask to see it).
 
 ### 8. Output destination
-Ask Gregg where to save the resulting image(s):
-- For Claude Code / Hermes Agent Desktop usage: ask for an absolute local folder/file path. Default to displaying the file back to him with the Read tool after saving (as done previously), unless he says not to.
-- For other agent contexts (e.g. OpenClaw) where the invoking agent's job is to push into a frontend messaging channel rather than save to disk: ask whether to save locally, output as a data URI/URL for the calling agent to forward, or both. Don't assume — this skill may be invoked from contexts without a local filesystem the end user can browse.
+Ask Gregg (AskUserQuestion) which he wants:
+- **Local file** — downloads the image(s) and saves locally. Ask for an absolute local folder/file path. Default to displaying the file back to him with the Read tool after saving, unless he says not to.
+- **Hosted link** — keeps the provider's signed image URL instead of downloading. **Always show this warning when offering the link option, regardless of platform**: *"Heads up — some agent runtimes (confirmed on OpenClaw, see openclaw/openclaw#112839) truncate long URLs in tool output, which can break a signed link like this one when copy-pasted. Local file is the safer default if you're not sure this will render fully."* Then respect whichever he picks.
+
+Don't assume based on platform — this skill may be invoked from Claude Code, Hermes, OpenClaw, or elsewhere, and the choice is Gregg's either way (disk usage/durability vs. wanting a forwardable link), not something to infer from context.
 
 ### 9. Build the request spec and call the script
-Write a spec JSON (see script docstring for shape) to a scratch file, then run:
+Write a spec JSON (see script docstring for shape) to a scratch file, setting `"mode": "download"` or `"mode": "link"` per Gregg's step 8 choice (plus `output_paths` or `url_files` respectively), then run:
 ```bash
 python3 /Users/GreggChen/.claude/skills/image-gen/scripts/call_provider.py <spec.json>
 ```
 The script:
 - base64-encodes any local `input_images` paths into data URIs,
 - POSTs to `api_url` with the Bearer key from `api_key_env`,
-- downloads returned image URL(s) to `output_paths`,
-- prints `{"saved": [...], "request_id": "..."}` on success.
+- **download mode**: downloads returned image URL(s) to `output_paths`, prints `{"mode": "download", "saved": [...], "request_id": "..."}`.
+- **link mode**: writes returned image URL(s) to `url_files` (never to stdout), prints `{"mode": "link", "url_files": [...], "request_id": "..."}`. Read the written file(s) yourself and paste the URL into your response — the raw signed URL must never pass through the tool call's own stdout (see "Signed URL truncation" below).
 
 If the provided sample cURL (step 4) implies a different request/response shape than DashScope's, adapt the spec or the script call accordingly — don't force-fit a shape the provider doesn't use. For a genuinely different provider (different field names entirely), note the difference to Gregg and consider it may need a small script variant rather than forcing one script to handle every provider's quirks.
 
 ### 10. Confirm and remember
-After a successful save:
+After a successful call:
 - Update `providers.json` with any new provider entry / new model name (including `expires` if Gregg gave one).
-- Tell Gregg where the file(s) were saved (and display via Read if in a filesystem context).
+- **Download mode**: tell Gregg where the file(s) were saved (and display via Read if in a filesystem context).
+- **Link mode**: give Gregg the link, repeating the truncation caveat from step 8.
 
 ## Request shape reference (DashScope/Qwen-Image style, default assumption)
 
@@ -156,4 +159,6 @@ Order matters — the text instruction typically refers to images by position ("
 - `providers.json` and any scratch spec files may contain local file paths but should never contain key material.
 
 ## Signed URL truncation (platform display-layer bug)
-`call_provider.py` already downloads generated images to local `output_paths` and only ever prints `{"saved": [...], "request_id": "..."}` — it never returns the provider's raw signed image URL as a bare string. This matters because some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts at 160 chars), which would slice a signed OSS URL through its `OSSAccessKeyId`/`Signature` query params and produce an unusable, unrecoverable link. Keep it this way — never change this script or the skill flow to report a raw image URL directly in chat/tool-output on any platform (Claude Code, Hermes, OpenClaw, or future ones); local path + request_id is the safe pattern.
+Gregg chooses **local file** or **hosted link** per job (step 8) — a real tradeoff (disk usage/durability vs. wanting a forwardable link), not a fake choice. But the raw signed image URL must never be printed to stdout as a bare string in *either* mode: some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts at 160 chars), which would slice a signed OSS URL through its `OSSAccessKeyId`/`Signature` query params and produce an unusable, unrecoverable link.
+
+`call_provider.py` handles this by writing the URL to a file (`url_files`) instead of printing it when `mode: "link"` is used. When reporting a link result to Gregg, always repeat the truncation warning from step 8. Do not assume "Claude Code is safe, so skip the warning there" — keep it uniform across platforms per Gregg's explicit preference, since the skill can't detect which runtime it's in.
