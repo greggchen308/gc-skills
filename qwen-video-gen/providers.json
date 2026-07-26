@@ -6,8 +6,6 @@
       "models_used": [
         { "name": "wan2.7-t2v-2026-06-12", "expires": "2026-09-30" },
         { "name": "wan2.7-r2v-2026-06-12", "expires": "2026-09-30" },
-        { "name": "wan2.7-i2v-2026-04-25", "expires": "2026-07-26" },
-        { "name": "wan2.7-t2v-2026-04-25", "expires": "2026-07-26" },
         { "name": "wan2.7-videoedit", "expires": null }
       ],
       "notes": "Task-status check uses the SAME host as submission, at /api/v1/tasks/{task_id} — not a separate global dashscope.aliyuncs.com host. Confirmed working 2026-07-22."
