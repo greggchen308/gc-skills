@@ -41,9 +41,20 @@ No hardcoded secrets — all keys come from env vars.
 
 1. **Local images to data URIs** — Any local file paths are converted to base64 data URIs before sending
 2. **API call** — `scripts/call_provider.py` POSTs the request (with images, prompt, parameters) to DashScope
-3. **Download** — Generated images are downloaded from response URLs to your local output paths
+3. **Deliver** — either downloads generated images locally or writes the signed URL(s) to a file, per your choice (see below)
 
 The skill handles image format detection, encoding, and multi-image workflows internally.
+
+## Local File vs. Hosted Link
+
+Before each job, the skill asks which delivery mode you want:
+
+- **Local file** — downloads the image(s) and reports only the local path(s).
+- **Hosted link** — keeps the provider's signed URL instead of downloading.
+
+Either way, the raw signed URL is **never printed directly to chat/tool-output as a bare string**. Some agent runtimes — confirmed on OpenClaw ([openclaw/openclaw#112839](https://github.com/openclaw/openclaw/issues/112839)) — hard-truncate long tool-output strings at a fixed character count, which cuts a signed URL through its `OSSAccessKeyId`/`Signature` query params and makes it unusable. So `call_provider.py` writes the URL to a file (`url_files`) rather than stdout, and the skill reads that file itself before showing you the link. If you pick the hosted-link option, you'll also see a heads-up about this — shown on every platform, since the skill can't detect which runtime it's running under.
+
+`call_provider.py` spec JSON takes `"mode": "download"` + `output_paths`, or `"mode": "link"` + `url_files`.
 
 ## Parameters
 
@@ -63,11 +74,11 @@ The skill handles image format detection, encoding, and multi-image workflows in
 ## Notes
 
 - Local image paths are embedded as data URIs (base64) — no files are uploaded separately
-- Output images are saved to the paths you specify
+- Output images are saved to the paths you specify (download mode) or referenced via file-written links (link mode)
 - Supports PNG, JPG, and other common image formats
 
 ## See Also
 
-- `SKILL.md` — Detailed execution guide for all modes and parameters
-- `providers.json` — API endpoints and model names
-- `scripts/call_provider.py` — Submit request and download generated images
+- `SKILL.md` — Detailed execution guide for all modes, parameters, and delivery modes
+- `providers.json` — API endpoints, model names, expiry tracking
+- `scripts/call_provider.py` — Submit request and deliver result (download or link)
