@@ -21,12 +21,14 @@ Provider connection details (API URL, key env var name) and previously-used mode
     "<provider_label>": {
       "api_url": "https://.../generation",
       "api_key_env": "DASHSCOPE_API_KEY",
-      "models_used": ["qwen-image-2.0-pro-2026-04-22", "qwen-image-2.0-pro"]
+      "models_used": [ { "name": "qwen-image-2.0-pro-2026-04-22", "expires": "2026-09-30" }, ... ]
     }
   }
 }
 ```
 `provider_label` is a short slug Gregg picks or that's derived from the URL host (e.g. `dashscope-qwen`). Read this file at the start of every invocation.
+
+`expires` is `null` if unknown/no expiry communicated. **Every time you list models for the user, check today's date against `expires` and flag any model expiring within 7 days** ("⚠️ qwen-image-2.0-pro-2026-04-22 expires 2026-07-26 — 4 days left") so Gregg doesn't build around a model about to disappear. (Same convention as `qwen-video-gen`'s `providers.json`.)
 
 ## Step-by-step execution
 
@@ -49,9 +51,9 @@ Read `providers.json`. Present Gregg a menu (via AskUserQuestion):
 - If already set: proceed silently, no need to mention it.
 
 ### 2. Model menu
-Look up `models_used` for the chosen provider in `providers.json`. Present a menu (via AskUserQuestion):
+Look up `models_used` for the chosen provider in `providers.json`. Present a menu (via AskUserQuestion), showing each model's name + expiry (flagging anything expiring within 7 days per the Config file section above):
 - One option per remembered model.
-- **"Add new model"** — ask Gregg to type the model string freely (models evolve fast; never treat the remembered list as exhaustive). Append it to `models_used` after a successful call.
+- **"Add new model"** — ask Gregg to type the model string freely (models evolve fast; never treat the remembered list as exhaustive). Ask if he knows an expiry date for it; store `expires` (or `null`). Append it to `models_used` after a successful call.
 - **"Remove a model"** — ask which remembered model to remove (useful when a free-quota/trial model expires or is retired), delete it from `models_used` in `providers.json`, then re-show this same menu so Gregg can pick a model to actually proceed with.
 
 If `models_used` is empty (brand-new provider), skip straight to asking Gregg to type a model — there's nothing to list yet.
@@ -112,7 +114,7 @@ If the provided sample cURL (step 4) implies a different request/response shape 
 
 ### 10. Confirm and remember
 After a successful save:
-- Update `providers.json` with any new provider entry / new model name.
+- Update `providers.json` with any new provider entry / new model name (including `expires` if Gregg gave one).
 - Tell Gregg where the file(s) were saved (and display via Read if in a filesystem context).
 
 ## Request shape reference (DashScope/Qwen-Image style, default assumption)
@@ -152,3 +154,6 @@ Order matters — the text instruction typically refers to images by position ("
 - Never print, log, or echo API key values, even partially — this previously tripped the permission classifier and is also just good practice.
 - Never write API keys into `providers.json` — only the env var *name* is stored there, never the value.
 - `providers.json` and any scratch spec files may contain local file paths but should never contain key material.
+
+## Signed URL truncation (platform display-layer bug)
+`call_provider.py` already downloads generated images to local `output_paths` and only ever prints `{"saved": [...], "request_id": "..."}` — it never returns the provider's raw signed image URL as a bare string. This matters because some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts at 160 chars), which would slice a signed OSS URL through its `OSSAccessKeyId`/`Signature` query params and produce an unusable, unrecoverable link. Keep it this way — never change this script or the skill flow to report a raw image URL directly in chat/tool-output on any platform (Claude Code, Hermes, OpenClaw, or future ones); local path + request_id is the safe pattern.

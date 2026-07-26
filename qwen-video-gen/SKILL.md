@@ -89,9 +89,11 @@ Write a vivid, specific prompt in the style/language appropriate to the mode and
 Show the prompt before calling only if Gregg asked to review it first.
 
 ### 8. Output destination
-Ask where Gregg wants the result:
-- **Claude Code / Hermes Agent Desktop**: link only by default (per Gregg's standing preference) — do not auto-download the video file. Offer local download as an explicit opt-in if he asks for it later, since the signed `video_url` expires (~24h observed).
-- **Other agent contexts** (e.g. OpenClaw): ask whether to output the link for the invoking agent to forward to a frontend messaging channel, save locally, or both — don't assume, this skill may run somewhere with no local filesystem the end user can browse.
+Ask Gregg for a local output path (folder or filename) to save the video to — default to a sensible scratch/output location if he doesn't care. **Always download locally, on every platform, no exceptions.**
+
+This isn't optional per-platform behavior anymore: never surface the raw signed `video_url` as a bare string in chat/tool-output. Several agent runtimes — confirmed on OpenClaw (see openclaw/openclaw#112839) — hard-truncate long tool-output strings at a fixed character count, which cuts the URL's query string mid-`Signature`/`OSSAccessKeyId` and leaves an unusable, unrecoverable link with no way to reconstruct the missing characters. Downloading locally and reporting only the short local path sidesteps this entirely, on every platform (Claude Code, Hermes, OpenClaw, anywhere else this skill runs).
+
+If Gregg explicitly wants a shareable hosted link (e.g. to forward via a messaging channel) rather than a local file, write the full `video_url` to a small scratch file and report the file path — never paste the raw URL directly into the chat/tool-output stream.
 
 ### 9. Build the request spec and submit
 Write a spec JSON to a scratch file:
@@ -123,16 +125,16 @@ Use **ScheduleWakeup** to poll — do not block synchronously waiting minutes fo
 Each wakeup:
 ```bash
 source ~/.zshrc 2>/dev/null
-python3 /Users/GreggChen/.claude/skills/qwen-video-gen/scripts/check_video.py <task_id> <api_key_env> <api_url_host_root>
+python3 /Users/GreggChen/.claude/skills/qwen-video-gen/scripts/check_video.py <task_id> <api_key_env> <api_url_host_root> <output_path>
 ```
-where `<api_url_host_root>` is the provider's `api_url` with the path stripped back to the host (e.g. `https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com`) — task status lives on the **same host** as submission, at `/api/v1/tasks/{task_id}`, confirmed in this session. Do not assume a separate global tasks host.
+where `<api_url_host_root>` is the provider's `api_url` with the path stripped back to the host (e.g. `https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com`) — task status lives on the **same host** as submission, at `/api/v1/tasks/{task_id}`, confirmed in this session. Do not assume a separate global tasks host. `<output_path>` is the local file path from step 8 — pass it on every poll even though it's only used once the task succeeds.
 
 - `PENDING` / `RUNNING` → schedule another wakeup (~120–180s is reasonable; first check can be sooner if the job is typically fast).
-- `SUCCEEDED` → `output.video_url` is the signed download link. Report it to Gregg per step 8's chosen destination. **Prefix the completion message with 3 emoji** (Gregg's standing preference for video-ready alerts, e.g. 🎬🎥✨) so it's visually distinct in a busy chat.
-- `FAILED` → report `output.code` and `output.message` verbatim. Common cause: wrong mode chosen for a model that requires `input.media` (i2v family) — don't guess a fix, tell Gregg what's missing and offer the mode menu again.
+- `SUCCEEDED` → the script has already downloaded the video to `<output_path>` and printed `{"task_status": "SUCCEEDED", "local_path": "..."}`. Report the **local path** to Gregg — never the raw `video_url` (see step 8 for why). **Prefix the completion message with 3 emoji** (Gregg's standing preference for video-ready alerts, e.g. 🎬🎥✨) so it's visually distinct in a busy chat.
+- `FAILED` → report `code` and `message` verbatim. Common cause: wrong mode chosen for a model that requires `input.media` (i2v family) — don't guess a fix, tell Gregg what's missing and offer the mode menu again.
 
 ### 11. Confirm and remember
-After success: update `providers.json` with any new provider/model entry (including `expires` if Gregg gave one). Tell Gregg the video is ready with the link (3-emoji prefix), and mention if it's a signed URL that will expire.
+After success: update `providers.json` with any new provider/model entry (including `expires` if Gregg gave one). Tell Gregg the video is saved locally at `local_path` (3-emoji prefix). Do not print the original signed `video_url` — it's already been consumed by the download and has no further use.
 
 ## Request shape reference (DashScope Wan2.7, confirmed + documented)
 
@@ -156,10 +158,12 @@ Content-Type: application/json
 GET {same host as submission}/api/v1/tasks/{task_id}
 Authorization: Bearer $DASHSCOPE_API_KEY
 ```
-Response `output.task_status` ∈ `PENDING | RUNNING | SUCCEEDED | FAILED`. On `SUCCEEDED`, `output.video_url` is a signed OSS URL (observed ~24h-scale expiry via the `Expires` query param — treat as time-limited, not permanent).
+Response `output.task_status` ∈ `PENDING | RUNNING | SUCCEEDED | FAILED`. On `SUCCEEDED`, `output.video_url` is a signed OSS URL (observed ~24h-scale expiry via the `Expires` query param — treat as time-limited, not permanent). `check_video.py` downloads this immediately and never returns it as a bare string (see "Signed URL truncation" below).
 
 ## Security notes
 - Never print, log, or echo API key values, even partially.
 - Never write API keys into `providers.json` — only the env var *name*.
 - Scratch spec files may contain local file paths but never key material.
-- Signed `video_url` values are time-limited — don't treat them as permanent storage; if Gregg needs durability, download locally on explicit request only.
+
+## Signed URL truncation (platform display-layer bug)
+`check_video.py` **always** downloads the video locally on `SUCCEEDED` and only ever prints a local path + short status, never the raw `video_url`. This isn't just tidiness — some agent runtimes hard-truncate long tool-output strings at a fixed character count (confirmed on OpenClaw, see openclaw/openclaw#112839: `coerceDisplayValue` cuts strings at 160 chars). Signed OSS URLs run 250–400+ chars with the auth signature (`OSSAccessKeyId`, `Signature`) near the end — truncation slices right through it, producing a link that returns `InvalidAccessKeyId` and can't be reconstructed from anything else in the response. Downloading locally sidesteps the bug entirely rather than depending on a per-platform display-limit fix. Applies uniformly across Claude Code, Hermes, OpenClaw, and any future platform this skill runs on — do not special-case "safe" platforms back to link-only.
