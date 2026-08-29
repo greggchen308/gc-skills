@@ -1,3 +1,9 @@
+<p align="center">
+  <b>Language / 语言:</b>
+  <a href="./README.md">English</a> ·
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
 # workbuddy-insights
 
 基于本地状态数据,生成一份有据可查的 **"我拿 WorkBuddy 做了什么"** 使用回顾报告 —— WorkBuddy 版的微软 *What I did with Copilot*。每一条结论都来自磁盘上的真实数据(会话数据库、产物索引、用量日志、项目记忆),绝不由当前对话推断。
