@@ -2,6 +2,8 @@
 
 Generate an evidence-based **"What I did with WorkBuddy"** usage appraisal from **local state only** — the WorkBuddy equivalent of Microsoft's *What I did with Copilot*. Every claim is derived from data on disk (session DB, artifact index, usage log, project memory); nothing is inferred from the live conversation.
 
+![WorkBuddy Usage Appraisal — preview of the generated HTML report](./screenshot.png)
+
 ## What It Does
 
 - **Windowed retrospective** — pulls your first and last session, then reports the whole span: sessions, active days, tokens, modes, models, experts, automations, and skills installed.
@@ -13,27 +15,16 @@ Generate an evidence-based **"What I did with WorkBuddy"** usage appraisal from 
 - **Ranked gaps & next actions** — gaps ranked by return-on-effort, plus ≤5 sequenced next actions with effort tags.
 - **Anti-sycophancy built in** — no strength without a citable data line; every inference is labelled; post-hoc narrative risk is stated explicitly.
 
-## Setup
+## Install
 
-### WorkBuddy
+Just tell WorkBuddy:
 
-```bash
-git clone --depth 1 --filter=blob:none --sparse \
-  https://github.com/greggchen308/gc-skills.git
-cd gc-skills
-git sparse-checkout set workbuddy-insights
-cp -r workbuddy-insights ~/.workbuddy-ai/skills/
+> Install workbuddy-insights skill from https://github.com/greggchen308/gc-skills/tree/main/workbuddy-insights
+
+## Invoke
+
 ```
-
-Or download the folder directly and place it at `~/.workbuddy-ai/skills/workbuddy-insights`.
-
-Then invoke by asking for an appraisal — e.g. *"review how I've been using WorkBuddy,"* *"what did I actually do this month,"* or *"give me a retrospective."*
-
-### Claude Code (if you keep a mirror)
-
-```bash
-git sparse-checkout set workbuddy-insights
-mv workbuddy-insights ~/.claude/skills/
+/workbuddy-insights
 ```
 
 ## Data Sources (all local, read-only)
