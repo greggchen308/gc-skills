@@ -3,12 +3,17 @@
     "dashscope-qwen-video": {
       "api_url": "https://llm-pke1xmem59p5giq5.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis",
       "api_key_env": "DASHSCOPE_API_KEY",
+      "upload_api_base": "https://dashscope.aliyuncs.com",
       "models_used": [
-        { "name": "wan2.7-t2v-2026-06-12", "expires": "2026-09-30" },
-        { "name": "wan2.7-r2v-2026-06-12", "expires": "2026-09-30" },
-        { "name": "wan2.7-videoedit", "expires": null }
+        { "name": "wan3.0-video", "expires": "2026-11-05", "free_quota": "30/30 as of 2026-09-06" },
+        { "name": "wan3.0-video-prime", "expires": "2026-11-21", "free_quota": "30/30 as of 2026-09-06" },
+        { "name": "wan2.7-t2v-2026-06-12", "expires": "2026-09-30", "free_quota": null },
+        { "name": "wan2.7-r2v-2026-06-12", "expires": "2026-09-30", "free_quota": null },
+        { "name": "wan2.7-i2v-2026-04-25", "expires": "2026-07-26", "free_quota": null },
+        { "name": "wan2.7-t2v-2026-04-25", "expires": "2026-07-26", "free_quota": null },
+        { "name": "wan2.7-videoedit", "expires": null, "free_quota": null }
       ],
-      "notes": "Task-status check uses the SAME host as submission, at /api/v1/tasks/{task_id} — not a separate global dashscope.aliyuncs.com host. Confirmed working 2026-07-22."
+      "notes": "Submission + task-status share the SAME host at /api/v1/tasks/{task_id} (not a separate global dashscope.aliyuncs.com host). Confirmed 2026-07-22. Wan 3.0 (wan3.0-video / wan3.0-video-prime): unified input.media[] with a 'type' field (first_frame, last_frame, reference_image x10, reference_video x5, reference_audio x5, file x1, link x1); prime = same capabilities, faster. wan3.0-video-prime and wan3.0-video each have their own 30-call free quota. Local video/audio/file inputs must be uploaded first via scripts/upload_asset.py -> oss:// URL (valid 48h); submit_video.py auto-adds the 'X-DashScope-OssResourceResolve: enable' header when it sees an oss:// URL. upload_api_base is the GLOBAL host, not the workspace MaaS host. Legacy wan2.7-* modes: see SKILL.md appendix."
     }
   }
 }

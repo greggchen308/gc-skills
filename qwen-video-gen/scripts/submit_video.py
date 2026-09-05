@@ -13,18 +13,31 @@ spec.json shape:
 {
   "api_url": "https://.../video-generation/video-synthesis",
   "api_key_env": "DASHSCOPE_API_KEY",
-  "model": "wan2.7-t2v-2026-06-12",
+  "model": "wan3.0-video",
   "input": { ... mode-specific shape, built by the skill flow ... },
-  "parameters": { "resolution": "720P", "ratio": "16:9", "duration": 10,
-                   "prompt_extend": true, "watermark": false, ... }
+  "parameters": { "resolution": "480P", "ratio": "adaptive", "duration": -1,
+                   "audio": true, "prompt_extend": true, "watermark": false, ... }
 }
 
-The "input" object is passed through as-is — the skill (not this script)
-is responsible for shaping it correctly per mode (t2v / i2v / r2v / videoedit /
-extend / audio-driven), including converting any local file paths in media
-URLs to data URIs beforehand if needed. This script's only job is the HTTP
-call and response parsing, since the input shape varies too much per mode
-to hardcode here.
+"input" examples (Wan 3.0, unified media[] with a "type" field):
+  text-to-video    {"prompt": "..."}
+  first frame      {"prompt": "...", "media": [{"type": "first_frame", "url": "..."}]}
+  omni-reference   {"prompt": "...Image 1...Video 1...", "media": [
+                     {"type": "reference_image", "url": "..."},
+                     {"type": "reference_video", "url": "oss://..."},
+                     {"type": "reference_audio", "url": "oss://..."}]}
+  deck -> video    {"prompt": "...", "media": [{"type": "file", "url": "oss://.../deck.pptx"}]}
+  web page -> video {"prompt": "...", "media": [{"type": "link", "url": "https://..."}]}
+(Legacy wan2.7-* uses different media types — see SKILL.md appendix.)
+
+The "input" object is passed through as-is — the skill (not this script) is
+responsible for shaping it per mode, including converting local image paths to
+data: URIs and uploading local video/audio/file assets to oss:// URLs
+(scripts/upload_asset.py) beforehand. If any media URL is an oss:// temp URL,
+this script automatically adds the "X-DashScope-OssResourceResolve: enable"
+header so the provider can resolve it. This script's only job is the HTTP call
+and response parsing, since the input shape varies too much per mode to
+hardcode here.
 """
 import json
 import os
@@ -51,15 +64,21 @@ def main():
         "input": spec["input"],
         "parameters": spec.get("parameters", {}),
     }
+    body_bytes = json.dumps(body).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "X-DashScope-Async": "enable",
+    }
+    # oss:// temp URLs (from upload_asset.py) only resolve when this header is set.
+    if "oss://" in json.dumps(spec["input"]):
+        headers["X-DashScope-OssResourceResolve"] = "enable"
 
     req = urllib.request.Request(
         spec["api_url"],
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "X-DashScope-Async": "enable",
-        },
+        data=body_bytes,
+        headers=headers,
         method="POST",
     )
 

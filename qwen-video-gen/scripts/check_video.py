@@ -3,8 +3,13 @@
 Checks a DashScope async task status by task_id.
 Caller (the skill flow) inspects task_status:
   PENDING / RUNNING  -> not done, schedule another check
-  SUCCEEDED          -> result delivered per --mode (see below)
+  SUCCEEDED          -> result delivered per --mode (see below); the printed
+                        JSON also carries a "usage" block (duration, fps, SR,
+                        output_video_duration, ...) for quota/cost reporting
   FAILED             -> code / message explain why
+  UNKNOWN            -> terminal: the task_id is only queryable for 24h and has
+                        now expired. Treat as failure and re-submit the job.
+                        (Handled by the same non-SUCCEEDED branch as FAILED.)
 
 Usage:
   python3 check_video.py <task_id> <api_key_env> <base_url> --mode=download --output-path=<path>
@@ -78,8 +83,12 @@ def main():
     result = json.loads(raw)
     output = result.get("output", {})
     task_status = output.get("task_status")
+    usage = result.get("usage", {})
 
     if task_status != "SUCCEEDED":
+        # Covers PENDING / RUNNING (still going), FAILED, and UNKNOWN (task_id
+        # expired after 24h — terminal, re-submit). The skill flow decides
+        # whether to poll again or report the failure.
         print(json.dumps({
             "task_status": task_status,
             "code": output.get("code"),
@@ -98,13 +107,13 @@ def main():
         with urllib.request.urlopen(video_url, timeout=120) as video_resp:
             with open(output_path, "wb") as f:
                 f.write(video_resp.read())
-        print(json.dumps({"task_status": "SUCCEEDED", "mode": "download", "local_path": output_path}))
+        print(json.dumps({"task_status": "SUCCEEDED", "mode": "download", "local_path": output_path, "usage": usage}))
     else:
         url_file = os.path.expanduser(args.url_file)
         os.makedirs(os.path.dirname(url_file) or ".", exist_ok=True)
         with open(url_file, "w") as f:
             f.write(video_url)
-        print(json.dumps({"task_status": "SUCCEEDED", "mode": "link", "url_file": url_file}))
+        print(json.dumps({"task_status": "SUCCEEDED", "mode": "link", "url_file": url_file, "usage": usage}))
 
 
 if __name__ == "__main__":

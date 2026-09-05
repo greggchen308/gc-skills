@@ -4,12 +4,24 @@ Async video synthesis via DashScope/Qwen video-generation APIs.
 
 ## What It Does
 
-- **Text-to-video (t2v)** — Generate video from a text prompt
-- **Image-to-video (i2v)** — Generate video from a single image or image pair (first frame, first+last frame)
-- **Reference-based (r2v)** — Generate video using multiple reference images
-- **Video extension** — Extend an existing video clip with new content
-- **Video editing** — Apply style changes or localized replacements to existing video
-- **Audio-driven** — Generate video synchronized to audio input
+Primary path is the **Wan 3.0** family (`wan3.0-video`, `wan3.0-video-prime`). One unified
+`input.media[]` array covers every mode:
+
+- **Text-to-video** — video from a text prompt
+- **Image-to-video** — from a single starting image, or a first + last frame pair
+- **Omni-Reference** — turn any mix of reference **images, videos, and audio** into video, referring
+  to each by position in the prompt (`Image 1` / `图1`, `Video 1` / `视频1`, `Audio 1` / `音频1`)
+- **Deck / document → video** — feed a `.pptx` / `.pdf` / `.docx` / `.xlsx` / `.txt` / `.md`
+  (≤50 pages, ≤100 MB) and a creative-direction prompt
+- **Web page → video** — feed one public, login-free URL and a creative-direction prompt
+- **Video edit** — style change or localized replace on an existing clip
+- **Video extend** — continue an existing clip
+
+`wan3.0-video-prime` has the same capabilities as `wan3.0-video` but is much faster end-to-end; the
+two models have separate free-call quotas.
+
+Legacy **Wan 2.x** (`wan2.7-*`) is still supported for `wan2.7-videoedit` and older grants — see the
+Appendix in `SKILL.md`.
 
 ## Setup
 
@@ -34,20 +46,28 @@ Then invoke with `/qwen-video-gen`.
 ## Configuration
 
 `providers.json` stores:
-- API endpoint URL
+- API endpoint URL (`api_url` — the workspace-scoped MaaS host; already Wan 3.0-ready)
+- `upload_api_base` — global DashScope host for temp file uploads
 - Environment variable name for the API key (default: `DASHSCOPE_API_KEY`)
-- List of available models with expiry dates
+- `models_used` — each model with `expires` and a `free_quota` note (e.g. `"30/30 as of 2026-09-06"`)
 - Implementation notes
 
 No hardcoded secrets — all keys come from env vars.
 
 ## How It Works
 
-1. **Submit** — `scripts/submit_video.py` POSTs a request spec to DashScope, gets back a `task_id`
-2. **Poll** — `scripts/check_video.py` polls the task status until `SUCCEEDED` or `FAILED`
-3. **Deliver** — on success, either downloads the video locally or writes the signed URL to a file, per your choice (see below)
+1. **Upload** (only for local video / audio / deck / doc inputs) — `scripts/upload_asset.py` uploads
+   the file to DashScope temp storage and returns an `oss://` URL valid ~48h. Local images are
+   base64-inlined instead; public `https://` URLs pass straight through.
+2. **Submit** — `scripts/submit_video.py` POSTs the request spec, gets back a `task_id`. It adds the
+   `X-DashScope-OssResourceResolve: enable` header automatically when a media URL is an `oss://` URL.
+3. **Poll** — `scripts/check_video.py` polls task status until `SUCCEEDED`, `FAILED`, or `UNKNOWN`
+   (`UNKNOWN` = the 24h result window expired — re-submit).
+4. **Deliver** — on success, either downloads the video locally or writes the signed URL to a file,
+   per your choice (see below). The success output also carries a `usage` block
+   (duration, fps, resolution).
 
-The skill handles all 8 request shapes (per mode) internally. See `SKILL.md` for full execution details.
+See `SKILL.md` for the full mode-by-mode execution guide.
 
 ## Local File vs. Hosted Link
 
@@ -56,29 +76,44 @@ Before each job, the skill asks which delivery mode you want:
 - **Local file** — downloads the video and reports only the local path.
 - **Hosted link** — keeps the provider's signed URL instead of downloading.
 
-Either way, the raw signed URL is **never printed directly to chat/tool-output as a bare string**. Some agent runtimes — confirmed on OpenClaw ([openclaw/openclaw#112839](https://github.com/openclaw/openclaw/issues/112839)) — hard-truncate long tool-output strings at a fixed character count, which cuts a signed URL through its `OSSAccessKeyId`/`Signature` query params and makes it unusable. So `check_video.py` writes the URL to a file (`--url-file`) rather than stdout, and the skill reads that file itself before showing you the link. If you pick the hosted-link option, you'll also see a heads-up about this — shown on every platform, since the skill can't detect which runtime it's running under.
+Either way, the raw signed URL is **never printed directly to chat/tool-output as a bare string**.
+Some agent runtimes — confirmed on OpenClaw
+([openclaw/openclaw#112839](https://github.com/openclaw/openclaw/issues/112839)) — hard-truncate long
+tool-output strings, which cuts a signed URL through its `OSSAccessKeyId`/`Signature` query params
+and makes it unusable. So `check_video.py` writes the URL to a file (`--url-file`) rather than
+stdout, and the skill reads that file itself before showing you the link. If you pick the
+hosted-link option you'll also see a heads-up about this — shown on every platform, since the skill
+can't detect which runtime it's running under.
 
-`check_video.py` usage:
 ```bash
-# Local file
+# Upload a local asset (deck / clip / voice) -> oss:// URL
+python3 scripts/upload_asset.py <local_file> <api_key_env> <model_name> [--api-base=https://dashscope.aliyuncs.com]
+
+# Submit
+python3 scripts/submit_video.py <spec.json>
+
+# Poll — local file
 python3 scripts/check_video.py <task_id> <api_key_env> <base_url> --mode=download --output-path=<path>
-# Hosted link
+# Poll — hosted link
 python3 scripts/check_video.py <task_id> <api_key_env> <base_url> --mode=link --url-file=<path>
 ```
 
 ## Requirements
 
-- Python 3 (for scripts)
+- Python 3 (stdlib only — no third-party packages)
 - `DASHSCOPE_API_KEY` environment variable set
-- Network access to DashScope endpoint
+- Network access to the DashScope endpoints
 
-## Model Expiry Tracking
+## Model Expiry & Quota Tracking
 
-`providers.json` includes expiry dates for each model. If a model expires within 7 days, the skill will warn you ("⚠️ wan2.7-t2v expires 2026-07-26 — 4 days left").
+`providers.json` includes an `expires` date and a `free_quota` note per model. If a model expires
+within 7 days, the skill warns you ("⚠️ wan3.0-video expires 2026-11-05 — 5 days left"). `free_quota`
+is a manual note — update it yourself when you know the new count.
 
 ## See Also
 
-- `SKILL.md` — Detailed execution guide for all modes, request shapes, and delivery modes
-- `providers.json` — API endpoints, model names, expiry tracking
+- `SKILL.md` — Detailed execution guide (Wan 3.0 modes + Wan 2.x legacy appendix)
+- `providers.json` — API endpoints, model names, expiry & quota tracking
+- `scripts/upload_asset.py` — Upload a local file, get a 48h `oss://` URL
 - `scripts/submit_video.py` — Submit async video job
 - `scripts/check_video.py` — Poll job status and deliver result (download or link)
