@@ -1,0 +1,118 @@
+<p align="center">
+  <b>Language / 语言:</b>
+  <a href="./README.md">English</a> ·
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
+# meralion-transcribe
+
+通过 **MERaLiON 云端 ASR 接口**(`api.meralion.ai`)把音频 / 视频转写成文字 —— 一套完全托管的语音转写服务。无需本地模型、不占用本地 GPU / CPU:音频只会上传,绝不在你本机处理。非常适合性能较弱的笔记本(例如 Intel MacBook Air),或当你指定的转写服务就是 MERaLiON 时。
+
+## 它能做什么
+
+- **纯云端转写** —— 零本地算力,因此在老旧 / 慢速机器上也能流畅运行。
+- **任意输入格式** —— 只要 `ffmpeg` 能读的格式都行(m4a、mp3、wav……)。
+- **OpenAI 风格 JSON** —— `choices[0].message.content`,可选说话人分离(diarization)与字 / 句级时间戳。
+- **嘈杂音频工具箱** —— 一段分段式 ASR 脚本,用于交叉验证多人对话 / 重复循环失效的情况。
+
+## 安装
+
+直接告诉 WorkBuddy:
+
+> Install meralion-transcribe skill from https://github.com/greggchen308/gc-skills/tree/main/meralion-transcribe
+
+或手动安装:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/greggchen308/gc-skills.git
+cd gc-skills
+git sparse-checkout set meralion-transcribe
+mv meralion-transcribe ~/.workbuddy-ai/skills/
+```
+
+## 调用
+
+```
+/meralion-transcribe
+```
+
+或者直接让 WorkBuddy"用 MERaLiON 转写 <文件>"。
+
+## 1) 获取 MERaLiON API Key
+
+1. 打开 MERaLiON 控制台:**https://studio.meralion.ai/api-console**
+2. 切到 **"My Key"**(我的密钥)标签页。
+3. **免费注册**,创建账号并生成你的 API Key。
+4. (备选) 点击 **API Tiers → Custom Plan**(套餐 → 定制方案)申请测试权限。
+
+请妥善保管密钥 —— 下一步你会把它存进 macOS 钥匙串,或通过 `MERALION_KEY` 环境变量传入。
+
+## 2) 存放密钥(macOS 钥匙串)
+
+```bash
+security add-generic-password -s "meralion.ai" -w "PASTE_YOUR_KEY_HERE" -U
+```
+
+技能在运行时会用 `security find-generic-password -s "meralion.ai" -w` 把它读回来。
+
+**非 macOS / 快速测试:** 改为导出环境变量 —— 技能会回退到环境读取:
+
+```bash
+export MERALION_KEY="PASTE_YOUR_KEY_HERE"
+```
+
+切勿把密钥写入文件或提交到代码仓库。
+
+## 工作流程
+
+1. 用 `ffmpeg` **转成 16 kHz 单声道**(MP3 能让上传体积更小;WAV 也能用,但大约大 4 倍)。
+2. **POST** base64 音频到 `https://api.meralion.ai/v1/audio/transcriptions`,头部带 `Authorization: Bearer <KEY>`。
+3. 服务端会对长音频(10 分钟以上)自动切片;请留出充足超时时间。
+
+对于嘈杂的多人录音,可以用 `scripts/chunked_asr.py` 切成 30–75 秒的小段,再跨多次转写做交叉验证。
+
+## 模型与接口要点(踩坑总结)
+
+- **接口地址:** `POST https://api.meralion.ai/v1/audio/transcriptions`。OpenAPI 文档里写的 `/audio/transcription` 在生产环境会返回 **404** —— 务必用 `/v1/...` 路径。
+- **模型:** 用 `MERaLiON/MERaLiON-3-3B-ASR-CTM`。文档默认的 `MERaLiON/MERaLiON-ASR-EXP` 会返回 **422**;`MERaLiON-3-10B` 会静默回退到 3B,并可能返回一段 **空白** 文本。在采信结果前,务必断言返回文本非空。
+- **鉴权:** `Authorization: Bearer <KEY>`(也支持 `X-API-Key` 头或 `?api_key=` 参数)。
+- **请求体:** `{"audio_url":"data:<mime>;base64,<B64>"}`,mime 取 `audio/wav|audio/mp3|audio/ogg`。音频必须是 **16 kHz 单声道**。
+- **返回:** OpenAI 风格 —— `choices[0].message.content`(回退到 `text` 或 `transcript`)。
+- **错误码:** 404 = 路径错误;422 = 模型枚举错误;"Broken pipe" 多半是大文件传错路径导致,而非体积问题。
+
+## 用量限制(ASTAR SG 已审批档位)
+
+- **已审批档位:** 5 次 / 分钟,1000 次 / 月,**音频 30 小时 / 月**(约 1800 分钟)—— 远超原先 60 分钟的默认值。
+- 实时用量:`GET https://api.meralion.ai/keys/usage`;档位信息:`GET /keys/tiers`。
+- **限速:** 5 rpm 是硬上限。批量 / 切片任务要控制节奏(每次调用间隔 `sleep 12–13` 秒),避免触发 429。
+
+## 嘈杂音频:重复循环修复
+
+在嘈杂的多人录音(人群、餐厅、互相打断)上,3B 模型可能陷入 **重复循环** —— 把同一个词或短语重复几百遍 —— 导致转写尾部变成废话。这是模型失效,不是文件问题。
+
+**修复方法(三步全用,再做交叉验证):**
+
+1. **上传前去噪 + 高通滤波:**
+   ```bash
+   ffmpeg -y -i IN -af "highpass=f=85,afftdn=nr=12:nf=-30" -ar 16000 -ac 1 -c:a pcm_s16le out.wav
+   ```
+2. **切成 30–75 秒小段** 分别转写(脚本:`scripts/chunked_asr.py`);每段自带的 `-ss` 偏移还能免费拿到时间戳。
+3. **跨多次转写交叉验证** —— 整段、75 秒段、30 秒段各跑一遍,逐句比对。只有多次结果一致的才进交付物;只出现一次的标记为不确定。
+
+不要悄悄把 ASR 的废话"抹平"。如果某个词反复出现但明显错了,请 **重建它并注明** 置信度。一份简短但诚实的文档,胜过一份流畅却编造的文档。
+
+## 文件结构
+
+- `SKILL.md` —— 完整触发条件、接口 / 模型坑点、用量限制,以及修复方案。
+- `scripts/chunked_asr.py` —— 针对嘈杂音频的分段转写与交叉验证脚本。
+
+## 注意事项
+
+- MERaLiON 主打东南亚语言,但实测对普通话的转写效果也不错。
+- 说话人分离(`return_diarization`)仅在多人音频上追加说话人标签;单人讲话返回纯文本。
+- 依赖 `ffmpeg` / `ffprobe` 在 `PATH` 中,以及 Python 3(用于脚本)。
+
+## 许可证
+
+按"原样"提供,仅供个人与学习教育用途。如需再分发,请在本仓库中添加 LICENSE 文件。
