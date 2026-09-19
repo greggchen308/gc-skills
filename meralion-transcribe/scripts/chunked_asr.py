@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""Fine-grained chunked transcription on denoised WAV, to triangulate a noisy recording."""
+"""Fine-grained chunked transcription on denoised WAV, to triangulate a noisy recording.
+
+Usage: chunked_asr.py SRC DENOISED_WAV CHUNK_SECONDS [OUTDIR]
+  SRC           original media (used only to read duration)
+  DENOISED_WAV  16 kHz mono WAV, already denoised
+  CHUNK_SECONDS e.g. 45 or 75
+  OUTDIR        default /tmp/meralion_asr  (chunks + JSON results land here)
+
+Always run this in addition to a whole-file pass — see the SKILL.md note on silent omission.
+"""
 import base64, json, os, subprocess, sys, time, urllib.request, urllib.error
 
 KEY = os.environ["MERALION_KEY"]
 ENDPOINT = "https://api.meralion.ai/v1/audio/transcriptions"
 SRC, TAG, CHUNK = sys.argv[1], sys.argv[2], int(sys.argv[3])
-outdir = "/tmp/winery/chunks_%s" % TAG
+outdir = sys.argv[4] if len(sys.argv) > 4 else "/tmp/meralion_asr"
 os.makedirs(outdir, exist_ok=True)
 
 dur = float(subprocess.check_output([
@@ -47,6 +56,6 @@ for i in range(n):
     if i < n - 1:
         time.sleep(13)
 
-with open("/tmp/winery/%s_chunked.json" % TAG, "w") as f:
+with open(os.path.join(outdir, "%s_chunked.json" % TAG), "w") as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
 print("DONE", flush=True)

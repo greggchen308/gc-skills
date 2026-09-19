@@ -19,8 +19,7 @@ service label only, so it works on any machine regardless of the Keychain accoun
 ```bash
 MERALION_KEY=$(security find-generic-password -s "meralion.ai" -w)
 ```
-If Keychain retrieval fails, fall back to the `MERALION_KEY` environment variable (user supplies it). Never
-write the key to a file or commit it.
+If Keychain retrieval fails, fall back to env var `MERALION_KEY` (user supplies it). Never write the key to a file or commit it.
 
 **To store / update the key** — service-label only, no account name needed (`-U` updates the matching entry):
 ```bash
@@ -42,6 +41,30 @@ Inspect metadata only (no secret printed) with `security find-generic-password -
 - **Body:** JSON `{"audio_url": "data:<mime>;base64,<B64>", ...}` where mime is `audio/wav|audio/mp3|audio/ogg`. Audio must be **16 kHz, mono**.
 - **Response:** OpenAI-style — `choices[0].message.content` (fallback to `text` or `transcript`).
 - **Errors:** 404 = wrong path; 422 = bad model enum; "Broken pipe" = usually wrong path on a large upload (not size).
+
+## Long files: whole-file passes silently OMIT content (learned 2026-09-19)
+A single whole-file request on a long recording can return **HTTP 200, a non-empty `content` string, sane
+`usage` — and still be missing a large fraction of the audio.** Observed on a 910 s (15 min) two-part
+recording (talk + audience Q&A): the whole-file pass returned 4,298 chars and covered the talk, but
+**dropped roughly half the Q&A with no error, no repetition loop, and no warning sign.** The chunked
+passes returned ~5,000 chars over the same audio and covered the whole session.
+
+**This is worse than the repetition loop**, because a repetition loop is visibly broken while silent
+omission looks like success. A short transcript is the only tell, and "short" is hard to judge without a
+baseline.
+
+**Rule: never trust a single whole-file pass on anything longer than ~5 minutes.** Always also run the
+chunked pass and compare (a) total character count and (b) whether the tail of the session is present.
+A defensible rule of thumb for Mandarin speech: expect roughly **250–350 characters per minute** of
+continuous speech; a whole-file transcript far below that is suspect, not terse.
+
+Cheap check — count characters and look at the tail:
+```bash
+python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
+```
+
+**Practical consequence:** for long files, treat the *chunked* pass as the primary transcript and the
+whole-file pass as a coherence cross-check — not the reverse.
 
 ## Workflow
 1. **Convert to 16 kHz mono** (MP3 keeps the base64 body small; WAV works but is ~4× larger):
@@ -102,6 +125,20 @@ to support a full write-up — a short honest document beats a fluent invented o
 **Verification trick:** cross-check ASR against an independent artifact. Photographed wine labels,
 signage, or slides confirm proper nouns that ASR mangles ("十代干白" → 石黛干白; "双目瞳" → 橡木桶;
 "李达敏" → 李德美). Always look for a second source of truth before finalising proper nouns.
+
+**Corollary — do NOT normalise an unfamiliar name into a familiar one (learned 2026-09-19).** A
+confident-looking correction can itself be the error, and it is harder to catch than a garbled transcript
+because it reads plausibly. **Before "fixing" an ASR'd product or brand name, search the raw string exactly
+as heard.**
+
+Real case: a transcript said "MiniMax H3". Because the speaker was talking about voices, this was
+reconstructed as a mis-transcription of MiniMax's `speech-2.6-hd` speech model, and published as such. The
+raw string was **correct** — MiniMax H3 is a real product (their omni-modal video model). The speaker was
+comparing video-generation options, not TTS. One search of the literal name would have caught it.
+
+Rule: **if the as-heard string resolves to a real product, keep it.** Only reconstruct when it resolves to
+nothing. And be suspicious of any reconstruction that requires the speaker to have been in the domain you
+had already assumed they were in.
 
 ## Notes
 - MERaLiON is pitched at Southeast Asian languages but transcribed Mandarin well in testing.

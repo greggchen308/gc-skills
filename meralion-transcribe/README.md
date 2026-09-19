@@ -73,9 +73,40 @@ Never write the key to a file or commit it.
 1. **Convert to 16 kHz mono** with `ffmpeg` (MP3 keeps the upload small; WAV works but is ~4× larger).
 2. **POST** the base64 audio to `https://api.meralion.ai/v1/audio/transcriptions` with `Authorization: Bearer <KEY>`.
 3. The server auto-chunks long audio (10+ min); allow a generous timeout.
+4. **Chunked pass (recommended for long/noisy audio):** run `scripts/chunked_asr.py` alongside the whole-file
+   pass and triangulate — see below.
 
-For noisy multi-speaker recordings, use `scripts/chunked_asr.py` to split into 30–75 s segments and
-triangulate across passes.
+```bash
+# denoise + high-pass, then 16 kHz mono WAV
+ffmpeg -y -i IN -af "highpass=f=85,afftdn=nr=12:nf=-30" -ar 16000 -ac 1 -c:a pcm_s16le out.wav
+# chunked pass: SRC DENOISED_WAV CHUNK_SECONDS [OUTDIR]
+python3 scripts/chunked_asr.py IN out.wav 60 /tmp/meralion_asr
+```
+
+## Long Files: Silent Omission (read this)
+
+A single whole-file request on a long recording can return **HTTP 200, a non-empty `content` string, sane
+`usage` — and still be missing a large fraction of the audio.** Observed on a 910 s (15 min) two-part
+recording (talk + audience Q&A): the whole-file pass returned 4,298 chars and covered the talk, but
+**dropped roughly half the Q&A** with no error, no repetition loop, and no warning sign. The chunked passes
+returned ~5,000 chars over the same audio and covered the whole session.
+
+This is **worse than the repetition loop**, because a repetition loop is visibly broken while silent
+omission looks like success. A short transcript is the only tell, and "short" is hard to judge without a
+baseline.
+
+**Rule: never trust a single whole-file pass on anything longer than ~5 minutes.** Always also run the
+chunked pass and compare (a) total character count and (b) whether the tail of the session is present.
+A defensible rule of thumb for Mandarin speech: expect roughly **250–350 characters per minute** of
+continuous speech; a whole-file transcript far below that is suspect, not terse.
+
+Cheap check — count characters and look at the tail:
+```bash
+python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
+```
+
+**Practical consequence:** for long files, treat the *chunked* pass as the primary transcript and the
+whole-file pass as a coherence cross-check — not the reverse.
 
 ## Models & Endpoint Notes (hard-won)
 
@@ -100,19 +131,33 @@ This is a model failure, not a file problem.
 
 **Remediation (use all three, then triangulate):**
 
-1. **Denoise + high-pass before uploading:**
-   ```bash
-   ffmpeg -y -i IN -af "highpass=f=85,afftdn=nr=12:nf=-30" -ar 16000 -ac 1 -c:a pcm_s16le out.wav
-   ```
+1. **Denoise + high-pass before uploading** (see the command in *How It Works* above).
 2. **Chunk into 30–75 s segments** and transcribe each (script: `scripts/chunked_asr.py`); the per-chunk offset gives free timestamps.
 3. **Triangulate across passes** — whole-file, 75 s chunks, 30 s chunks — and diff sentence by sentence. Only content agreeing across passes goes into the deliverable; anything in a single pass is flagged uncertain.
 
 Do not silently smooth over ASR garbage. If a term recurs but is obviously wrong, reconstruct it *and say so* with a confidence level. A short honest document beats a fluent invented one.
 
+## Verify Names Before You "Fix" Them
+
+A confident-looking correction can itself be the error — and it is **harder** to catch than a garbled
+transcript, because it reads plausibly. **Before "fixing" an ASR'd product or brand name, search the raw
+string exactly as heard.**
+
+Real case: a transcript said "MiniMax H3". Because the speaker was talking about voices, this was
+reconstructed as a mis-transcription of MiniMax's `speech-2.6-hd` speech model, and published as such. The
+raw string was **correct** — MiniMax H3 is a real product (their omni-modal video model). The speaker was
+comparing video-generation options, not TTS. One search of the literal name would have caught it.
+
+**Rule: if the as-heard string resolves to a real product, keep it.** Only reconstruct when it resolves to
+nothing. And be suspicious of any reconstruction that requires the speaker to have been in the domain you
+had already assumed they were in.
+
 ## Files
 
 - `SKILL.md` — full trigger conditions, endpoint/model pitfalls, limits, and the remediation recipe.
-- `scripts/chunked_asr.py` — segmented transcription for triangulation of noisy audio.
+- `scripts/chunked_asr.py` — segmented transcription for triangulation of noisy / long audio.
+  Usage: `python3 chunked_asr.py SRC DENOISED_WAV CHUNK_SECONDS [OUTDIR]`.
+- `CHANGELOG.md` — dated revision history for this skill.
 
 ## Notes
 
