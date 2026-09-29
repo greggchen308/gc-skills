@@ -8,14 +8,21 @@
 
 Transcribe audio/video to text via the **MERaLiON cloud ASR API** (`api.meralion.ai`) — a fully hosted
 speech-to-text service. No local model, no local GPU/CPU load: your audio is uploaded, never processed on
-your machine. Ideal for weak laptops (e.g. an Intel MacBook Air) or when MERaLiON is your designated
-transcription provider.
+your machine. Ideal for weak laptops (an old Intel MacBook Air, or any Apple Silicon Mac) or when MERaLiON
+is your designated transcription provider.
+
+> **Apple Silicon note.** This skill drives a cloud API, so the *service* works on any Mac. What can break
+> is the local toolchain around it. On an arm64 Mac whose `ffmpeg` is still an x86_64 build and where
+> **Rosetta 2 is not installed**, `ffmpeg` and every other x86_64 helper fail with
+> `Bad CPU type in executable`. The skill documents four arm64-native macOS replacements — `afconvert`,
+> `afinfo`, `python3`, `security` — that cover the whole workflow with no `ffmpeg` at all. See
+> *No ffmpeg? Apple Silicon fallback* below.
 
 ## What It Does
 
 - **Cloud-only transcription** — zero local compute, so it runs fine on old/slow machines.
 - **Any input format** — anything `ffmpeg` can read (m4a, mp3, wav, …).
-- **OpenAI-style JSON** — `choices[0].message.content`, with optional diarization and word/segment timestamps.
+- **OpenAI-style JSON** — `choices[0].message.content`. (Diarization and timestamps are accepted by the API but never surface — see *Notes*.)
 - **Noisy-audio toolkit** — a chunked-ASR script to triangulate crosstalk / repetition-loop failures.
 
 ## Install
@@ -83,6 +90,33 @@ ffmpeg -y -i IN -af "highpass=f=85,afftdn=nr=12:nf=-30" -ar 16000 -ac 1 -c:a pcm
 python3 scripts/chunked_asr.py IN out.wav 60 /tmp/meralion_asr
 ```
 
+## No ffmpeg? Apple Silicon fallback
+
+The skill normally shells out to `ffmpeg`. On a Mac where `ffmpeg` is an x86_64 build and **Rosetta 2 is
+not installed**, it dies with `Bad CPU type in executable` — and so does every other x86_64 helper. Four
+macOS tools are arm64-native and cover the whole workflow:
+
+| Need | Broken | Native replacement |
+|---|---|---|
+| Audio → 16 kHz mono WAV | `ffmpeg` (x86_64) | **`/usr/bin/afconvert`** |
+| Duration / source params | `ffprobe` (x86_64) | **`/usr/bin/afinfo`** |
+| HTTPS POST + JSON | x86_64 Python | **`/usr/bin/python3`** (universal) |
+| Keychain key | — | `/usr/bin/security` |
+
+```bash
+# 16 kHz mono 16-bit WAV — no ffmpeg. afconvert ships with every macOS.
+/usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 IN.m4a /tmp/out.wav
+# ALWAYS confirm the duration matches the source before uploading
+/usr/bin/afinfo /tmp/out.wav | grep duration
+```
+
+**`afconvert` has no MP3 encoder**, so on such a machine WAV is the only output format — the "MP3 keeps the
+upload small" advice above does not apply. Slice chunks in Python with the stdlib `wave` module instead of
+`ffmpeg -ss`. Ready-made harness: `scripts/test_meralion.py`.
+
+**Call real binaries by absolute path** (`/bin/ls`, `/usr/bin/tail`, `/usr/bin/curl`). Bare names may hit a
+shim that execs the wrong architecture.
+
 ## Long Files: Silent Omission (read this)
 
 A single whole-file request on a long recording can return **HTTP 200, a non-empty `content` string, sane
@@ -105,13 +139,16 @@ Cheap check — count characters and look at the tail:
 python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
 ```
 
-**Practical consequence:** for long files, treat the *chunked* pass as the primary transcript and the
-whole-file pass as a coherence cross-check — not the reverse.
+**Practical consequence — but judge the audio first.** For **noisy / crowded / very long** audio, treat the
+*chunked* pass as the primary transcript and the whole-file pass as a coherence cross-check. **Counter-case:**
+on **clean close-mic** audio the whole-file pass can be *better* — measured on a 526 s Mandarin room
+recording, whole-file **2,581** chars vs chunked **2,091**, with chunk boundaries introducing reduplicated
+syllables ("减减少") and mid-sentence cuts. Run both passes either way; keep the one that reads most coherently.
 
 ## Models & Endpoint Notes (hard-won)
 
 - **Endpoint:** `POST https://api.meralion.ai/v1/audio/transcriptions`. The OpenAPI spec's `/audio/transcription` returns **404** on production — use the `/v1/...` path.
-- **Model:** use `MERaLiON/MERaLiON-3-3B-ASR-CTM`. The spec default `MERaLiON/MERaLiON-ASR-EXP` returns **422**; `MERaLiON-3-10B` silently falls back to 3B and can emit an **empty** transcript. Always assert the returned text is non-empty before trusting a response.
+- **Model:** use `MERaLiON/MERaLiON-3-3B-ASR-CTM`. The spec default `MERaLiON/MERaLiON-ASR-EXP` returns **422**; `MERaLiON-3-10B` **silently falls back to the 3B** — the response `model` field echoes `MERaLiON-3-3B-ASR-CTM` with no error, so requesting 10B buys nothing. Always assert the returned text is non-empty *and* check for an `error` key: a valid zero-sample WAV returns **HTTP 200 carrying `code: 400`** in the body, so a status-code check alone sees a rejected request as success.
 - **Auth:** `Authorization: Bearer <KEY>` (also accepts `X-API-Key` or `?api_key=`).
 - **Body:** `{"audio_url":"data:<mime>;base64,<B64>"}`, where mime is `audio/wav|audio/mp3|audio/ogg`. Audio must be **16 kHz, mono**.
 - **Response:** OpenAI-style — `choices[0].message.content` (fallback to `text` or `transcript`).
@@ -133,7 +170,7 @@ This is a model failure, not a file problem.
 
 1. **Denoise + high-pass before uploading** (see the command in *How It Works* above).
 2. **Chunk into 30–75 s segments** and transcribe each (script: `scripts/chunked_asr.py`); the per-chunk offset gives free timestamps.
-3. **Triangulate across passes** — whole-file, 75 s chunks, 30 s chunks — and diff sentence by sentence. Only content agreeing across passes goes into the deliverable; anything in a single pass is flagged uncertain.
+3. **Triangulate across passes by SEMANTIC ANCHORS — never by diffing text.** The model returns a *paraphrase*, not a copy: re-running the same 75 s yields the same meaning in different characters. Measured 12-gram overlap between whole-file and chunked passes is only **~55 % (Cantonese) / ~72 % (Mandarin)** even when character counts agree within 0.4 %. A text diff therefore reports massive "divergence" when nothing was omitted, and a keep-only-what-agrees rule would discard almost everything. Instead, compare **numbers, dates, Latin-script words and proper nouns** across passes: anything present in one and absent from the other is a genuine omission/error candidate, while wording differences around a shared anchor are non-determinism. Keep the pass that reads most coherently and log the other's unique anchors as uncertainties.
 
 Do not silently smooth over ASR garbage. If a term recurs but is obviously wrong, reconstruct it *and say so* with a confidence level. A short honest document beats a fluent invented one.
 
@@ -157,13 +194,25 @@ had already assumed they were in.
 - `SKILL.md` — full trigger conditions, endpoint/model pitfalls, limits, and the remediation recipe.
 - `scripts/chunked_asr.py` — segmented transcription for triangulation of noisy / long audio.
   Usage: `python3 chunked_asr.py SRC DENOISED_WAV CHUNK_SECONDS [OUTDIR]`.
+- `scripts/test_meralion.py` — end-to-end smoke test using only native macOS tools (no `ffmpeg`, no pip).
+  Usage: `/usr/bin/python3 scripts/test_meralion.py AUDIO [CHUNK_SECONDS]`.
 - `CHANGELOG.md` — dated revision history for this skill.
 
 ## Notes
 
-- MERaLiON is pitched at Southeast Asian languages but transcribed Mandarin well in testing.
-- Diarization (`return_diarization`) adds speaker tags only for multi-speaker audio; single-speaker talks return plain text.
-- Requires `ffmpeg`/`ffprobe` on `PATH` and Python 3 (for the script).
+- MERaLiON is pitched at Southeast Asian languages but transcribed Mandarin and Hong Kong Cantonese well in
+  testing. No evidence on telephony, heavy background noise, overlapping speakers, or the SEA languages it
+  targets — do not generalise from conference-room recordings. Mandarin quality > Cantonese quality.
+- **Diarization and timestamps do not work.** `return_diarization` / `return_timestamps` are accepted but
+  never surface in the response — the schema carries no speaker labels and no segment timings. Derive
+  timestamps from your own chunk `-ss` offsets. Do not promise diarization to a user.
+- **Cantonese output script is wrong by default** — the model returns Cantonese vocabulary in mixed
+  Simplified/Traditional orthography (measured **24 % Simplified-only** CJK in a transcript that must be
+  Traditional). It needs an `s2hk` pass; the conversion recipe lives in the `dashscope-qwen-asr` skill.
+- **Proper nouns are the single biggest weakness**, in both languages — an organisation's own name came back
+  as six different strings across passes. Cross-check against an independent artifact (photo, slide, website).
+- Normally requires `ffmpeg`/`ffprobe` on `PATH` and Python 3 (for the scripts). On an Apple Silicon Mac
+  without Rosetta 2, use the native fallback above instead — no `ffmpeg` required.
 
 ## License
 

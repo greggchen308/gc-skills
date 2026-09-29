@@ -6,13 +6,15 @@
 
 # meralion-transcribe
 
-通过 **MERaLiON 云端 ASR 接口**(`api.meralion.ai`)把音频 / 视频转写成文字 —— 一套完全托管的语音转写服务。无需本地模型、不占用本地 GPU / CPU:音频只会上传,绝不在你本机处理。非常适合性能较弱的笔记本(例如 Intel MacBook Air),或当你指定的转写服务就是 MERaLiON 时。
+通过 **MERaLiON 云端 ASR 接口**(`api.meralion.ai`)把音频 / 视频转写成文字 —— 一套完全托管的语音转写服务。无需本地模型、不占用本地 GPU / CPU:音频只会上传,绝不在你本机处理。非常适合性能较弱的笔记本(老款 Intel MacBook Air,或任何 Apple 芯片的 Mac),或当你指定的转写服务就是 MERaLiON 时。
+
+> **Apple 芯片注意:** 本技能调用的是云端接口,所以 **服务本身在任何 Mac 上都能用**。真正可能出问题的是它周围的本地工具链。在 arm64 Mac 上,如果 `ffmpeg` 仍是 x86_64 版本、且 **未安装 Rosetta 2**,那么 `ffmpeg` 以及所有 x86_64 辅助程序都会以 `Bad CPU type in executable` 直接失败。本技能给出了四个 arm64 原生的 macOS 替代工具 —— `afconvert`、`afinfo`、`python3`、`security` —— 完全不用 `ffmpeg` 也能跑通全流程。详见下文《没有 ffmpeg?Apple 芯片替代方案》。
 
 ## 它能做什么
 
 - **纯云端转写** —— 零本地算力,因此在老旧 / 慢速机器上也能流畅运行。
 - **任意输入格式** —— 只要 `ffmpeg` 能读的格式都行(m4a、mp3、wav……)。
-- **OpenAI 风格 JSON** —— `choices[0].message.content`,可选说话人分离(diarization)与字 / 句级时间戳。
+- **OpenAI 风格 JSON** —— `choices[0].message.content`。(说话人分离与时间戳参数虽被接受,但不会真正返回 —— 见《注意事项》。)
 - **嘈杂音频工具箱** —— 一段分段式 ASR 脚本,用于交叉验证多人对话 / 重复循环失效的情况。
 
 ## 安装
@@ -78,6 +80,28 @@ ffmpeg -y -i IN -af "highpass=f=85,afftdn=nr=12:nf=-30" -ar 16000 -ac 1 -c:a pcm
 python3 scripts/chunked_asr.py IN out.wav 60 /tmp/meralion_asr
 ```
 
+## 没有 ffmpeg?Apple 芯片替代方案
+
+本技能通常依赖 `ffmpeg`。如果 Mac 上的 `ffmpeg` 是 x86_64 版本、且 **未安装 Rosetta 2**,它会以 `Bad CPU type in executable` 直接失败 —— 其他 x86_64 辅助程序也一样。macOS 自带的四个 arm64 原生工具足以覆盖全流程:
+
+| 用途 | 已失效 | 原生替代 |
+|---|---|---|
+| 音频 → 16 kHz 单声道 WAV | `ffmpeg`(x86_64) | **`/usr/bin/afconvert`** |
+| 读取时长 / 源参数 | `ffprobe`(x86_64) | **`/usr/bin/afinfo`** |
+| HTTPS POST + JSON | x86_64 Python | **`/usr/bin/python3`**(通用二进制) |
+| 从钥匙串读取密钥 | — | `/usr/bin/security` |
+
+```bash
+# 转成 16 kHz 单声道 16-bit WAV —— 不需要 ffmpeg。afconvert 是每台 macOS 自带的。
+/usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 IN.m4a /tmp/out.wav
+# 上传前务必确认时长与源文件一致
+/usr/bin/afinfo /tmp/out.wav | grep duration
+```
+
+**`afconvert` 没有 MP3 编码器**,所以在这类机器上只能输出 WAV —— 上文"MP3 能让上传体积更小"的建议在此不适用。切片请用 Python 标准库 `wave` 模块,而不是 `ffmpeg -ss`。现成脚本:`scripts/test_meralion.py`。
+
+**请用绝对路径调用真实二进制文件**(`/bin/ls`、`/usr/bin/tail`、`/usr/bin/curl`)。裸命令名可能会命中一个以错误架构执行的 shim。
+
 ## 长音频:静默漏字(必读)
 
 在长录音上,**单次整段请求**可能返回 **HTTP 200、非空 `content`、正常的 `usage`,却依然丢失了音频的很大一部分**。实测一段 910 秒(15 分钟)的"演讲 + 观众问答"双段录音:整段转写返回了 4,298 字、覆盖了演讲部分,却 **悄悄丢掉了约一半的问答** —— 没有报错、没有重复循环、没有任何征兆。而分段转写在同一段音频上返回了约 5,000 字,覆盖了整场。
@@ -92,12 +116,12 @@ python3 scripts/chunked_asr.py IN out.wav 60 /tmp/meralion_asr
 python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
 ```
 
-**实际后果:** 对长音频,把 **分段转写** 当作主稿,把整段转写当作一致性交叉校验 —— 顺序不要反过来。
+**实际后果 —— 但先判断音频类型。** 对 **嘈杂 / 人多 / 超长** 的音频,把 **分段转写** 当作主稿,把整段转写当作一致性交叉校验。**反例:** 对 **近距离麦克风的干净音频**,整段转写反而可能 **更好** —— 实测一段 526 秒普通话会议室录音,整段 **2,581** 字 vs 分段 **2,091** 字,而且切片边界还会引入叠字("减减少")和断句。两种情况都跑一遍,取读起来最连贯的那一版。
 
 ## 模型与接口要点(踩坑总结)
 
 - **接口地址:** `POST https://api.meralion.ai/v1/audio/transcriptions`。OpenAPI 文档里写的 `/audio/transcription` 在生产环境会返回 **404** —— 务必用 `/v1/...` 路径。
-- **模型:** 用 `MERaLiON/MERaLiON-3-3B-ASR-CTM`。文档默认的 `MERaLiON/MERaLiON-ASR-EXP` 会返回 **422**;`MERaLiON-3-10B` 会静默回退到 3B,并可能返回一段 **空白** 文本。在采信结果前,务必断言返回文本非空。
+- **模型:** 用 `MERaLiON/MERaLiON-3-3B-ASR-CTM`。文档默认的 `MERaLiON/MERaLiON-ASR-EXP` 会返回 **422**;`MERaLiON-3-10B` 会 **静默回退到 3B** —— 返回体里的 `model` 字段会回显 `MERaLiON-3-3B-ASR-CTM`,且不报任何错,所以指定 10B 没有任何意义。在采信结果前,务必断言返回文本非空,**同时** 检查是否存在 `error` 键:一个合法的零采样 WAV 会返回 **HTTP 200,但响应体里带 `code: 400`**,只看状态码会把被拒绝的请求当成成功。
 - **鉴权:** `Authorization: Bearer <KEY>`(也支持 `X-API-Key` 头或 `?api_key=` 参数)。
 - **请求体:** `{"audio_url":"data:<mime>;base64,<B64>"}`,mime 取 `audio/wav|audio/mp3|audio/ogg`。音频必须是 **16 kHz 单声道**。
 - **返回:** OpenAI 风格 —— `choices[0].message.content`(回退到 `text` 或 `transcript`)。
@@ -117,7 +141,7 @@ python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
 
 1. **上传前去噪 + 高通滤波**(命令见上文"工作流程")。
 2. **切成 30–75 秒小段** 分别转写(脚本:`scripts/chunked_asr.py`);每段自带的 `-ss` 偏移还能免费拿到时间戳。
-3. **跨多次转写交叉验证** —— 整段、75 秒段、30 秒段各跑一遍,逐句比对。只有多次结果一致的才进交付物;只出现一次的标记为不确定。
+3. **跨多次转写交叉验证 —— 比对"语义锚点",绝不要逐字比对文本。** 这个模型返回的是 **改写**,不是复述:同一段 75 秒音频重跑一次,意思相同但用字不同。实测整段与分段两次结果之间的 12-gram 重合度只有 **约 55%(粤语)/ 约 72%(普通话)**,而两者字数却相差不到 0.4%。因此逐字比对会报出大量"分歧" —— 其实什么都没漏;而"只保留一致内容"的规则几乎会把全部内容都丢掉。正确做法是比对 **数字、日期、拉丁字母词与专有名词**:只在其中一次出现、另一次缺失的,才是真正的漏字或错误候选;共享锚点周围的用词差异属于模型不确定性,忽略即可。取读起来最连贯的那一版为主稿,把另一版独有的锚点记为待确认项。
 
 不要悄悄把 ASR 的废话"抹平"。如果某个词反复出现但明显错了,请 **重建它并注明** 置信度。一份简短但诚实的文档,胜过一份流畅却编造的文档。
 
@@ -134,13 +158,17 @@ python3 -c "t=open('asr_whole.txt').read(); print(len(t)); print(t[-800:])"
 - `SKILL.md` —— 完整触发条件、接口 / 模型坑点、用量限制,以及修复方案。
 - `scripts/chunked_asr.py` —— 针对嘈杂 / 长音频的分段转写与交叉验证脚本。
   用法:`python3 chunked_asr.py SRC DENOISED_WAV CHUNK_SECONDS [OUTDIR]`。
+- `scripts/test_meralion.py` —— 端到端冒烟测试,只用 macOS 原生工具(不需要 `ffmpeg`,不需要 pip)。
+  用法:`/usr/bin/python3 scripts/test_meralion.py AUDIO [CHUNK_SECONDS]`。
 - `CHANGELOG.md` —— 本技能的修订记录(按日期)。
 
 ## 注意事项
 
-- MERaLiON 主打东南亚语言,但实测对普通话的转写效果也不错。
-- 说话人分离(`return_diarization`)仅在多人音频上追加说话人标签;单人讲话返回纯文本。
-- 依赖 `ffmpeg` / `ffprobe` 在 `PATH` 中,以及 Python 3(用于脚本)。
+- MERaLiON 主打东南亚语言,但实测对普通话与中国香港粤语的转写效果都不错。对电话音质、强背景噪声、多人抢话,以及它主打的东南亚语言,尚无实测数据 —— 不要拿会议室录音的经验去外推。普通话质量优于粤语。
+- **说话人分离与时间戳都不生效。** `return_diarization` / `return_timestamps` 参数会被接受,但永远不会出现在返回体里 —— 返回结构中既没有说话人标签,也没有分段时轴。时间戳请用你自己切片的 `-ss` 偏移推算。不要向用户承诺说话人分离。
+- **粤语输出的字形默认是错的** —— 模型会输出粤语词汇,但夹杂简体 / 繁体两种字形(实测在必须用繁体的转写中,**24% 的汉字是简体独有字形**)。需要再过一遍 `s2hk` 转换;转换配方见 `dashscope-qwen-asr` 技能。
+- **专有名词是最大的短板**(两种语言都一样)—— 某机构自己的名字在不同批次里出现过六种写法。请务必用独立材料(照片、幻灯片、官网)交叉核实。
+- 通常依赖 `ffmpeg` / `ffprobe` 在 `PATH` 中,以及 Python 3(用于脚本)。在未安装 Rosetta 2 的 Apple 芯片 Mac 上,请改用上文的原生替代方案 —— 不需要 `ffmpeg`。
 
 ## 许可证
 
