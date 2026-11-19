@@ -17,7 +17,7 @@ own README is the detailed documentation.
 | [`qwen-video-gen`](./qwen-video-gen/README.md) | Async video synthesis: Wan 3.0 text/image-to-video, Omni-Reference (image/video/audio), deck/doc/web-page → video, video edit and extend; Wan 2.x legacy appendix | DashScope/Qwen async video-synthesis API |
 | [`video-trim`](./video-trim/README.md) | Cut one or more time ranges out of a video and stitch the kept segments into one file; lossless stream copy or frame-accurate re-encode | Local `ffmpeg` / `ffprobe`, no network |
 | [`meralion-transcribe`](./meralion-transcribe/README.md) | Cloud speech-to-text, plus a chunked cross-check workflow for long/noisy recordings and an Apple Silicon fallback needing no `ffmpeg` | MERaLiON cloud ASR (`api.meralion.ai`) |
-| [`workbuddy-insights`](./workbuddy-insights/README.md) | Evidence-based "What I did with WorkBuddy" retrospective, rendered as one branded HTML file | Local WorkBuddy state under `~/.workbuddy-ai/` |
+| [`workbuddy-insights`](./workbuddy-insights/README.md) | Evidence-based "What I did with WorkBuddy" retrospective: chosen window, deterministic JSON payload, branded HTML with per-claim provenance labels | Local WorkBuddy state under `~/.workbuddy-ai/` |
 
 `meralion-transcribe` and `workbuddy-insights` also ship 简体中文 READMEs
 ([transcribe](./meralion-transcribe/README.zh-CN.md),
@@ -59,7 +59,7 @@ Install roots differ by runtime — use whichever your agent's skill loader read
 | `qwen-video-gen` | `DASHSCOPE_API_KEY` | Python 3 |
 | `video-trim` | none | Python 3, `ffmpeg` + `ffprobe` on `PATH` |
 | `meralion-transcribe` | MERaLiON API key | Python 3, `ffmpeg` / `ffprobe` — or native macOS `afconvert` / `afinfo` / `python3` / `security` |
-| `workbuddy-insights` | none | `sqlite3`, WorkBuddy local state |
+| `workbuddy-insights` | none | `/usr/bin/python3` (stdlib `sqlite3`), WorkBuddy local state |
 
 Every bundled script uses the **Python standard library only** — no `pip install` anywhere.
 
@@ -84,6 +84,9 @@ Every bundled script uses the **Python standard library only** — no `pip insta
   numbered runbook for the agent, including what to ask the user and what to verify.
 - Helpers in `scripts/` take a JSON spec file or CLI args and print one JSON result line.
   They are intentionally thin — the agent builds the spec, the script executes it.
+  Exception: `workbuddy-insights/scripts/compute.py` writes a full evidence payload to
+  disk (so the report can cite a `run_id`) and prints a short summary, because the
+  payload is the audit trail rather than a transient tool result.
 - **Local file vs hosted link:** the two generation skills ask on every job whether to
   download the result or keep the provider's signed URL. In both cases the raw signed URL
   is written to a file and never printed bare to stdout, because some runtimes truncate
